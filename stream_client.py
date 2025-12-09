@@ -1,24 +1,29 @@
-import pandas as pd
-import requests
 import time
-import os
+import requests
+import pandas as pd
 
 API_URL = "http://localhost:5000/predict"
-DATA_PATH = os.path.join("data", "synthetic_iot_dataset_challenging.csv")
+CSV_PATH = "data/synthetic_iot_dataset_challenging.csv"  # adjust if needed
 
 def main():
-    # Load dataset
-    df = pd.read_csv(DATA_PATH)
-    df = df.rename(columns={"Anomaly": "is_anomaly"})
+    try:
+        df = pd.read_csv(CSV_PATH)
+    except FileNotFoundError:
+        print(f"Could not find CSV at {CSV_PATH}")
+        return
 
-    # Take first N rows to simulate a stream
-    N = 20
-    subset = df.head(N)
+    print(f"Loaded dataset with {len(df)} rows")
 
-    for idx, row in subset.iterrows():
+    # Rename Anomaly for consistency (not used for sending)
+    if "Anomaly" in df.columns:
+        df = df.rename(columns={"Anomaly": "is_anomaly"})
+
+    N = 20  # number of rows to stream
+    for i, (_, row) in enumerate(df.head(N).iterrows()):
         payload = {
             "records": [
                 {
+                    "Device_ID": str(row["Device_ID"]),
                     "Temperature": float(row["Temperature"]),
                     "Humidity": float(row["Humidity"]),
                     "Battery_Level": float(row["Battery_Level"]),
@@ -26,21 +31,22 @@ def main():
             ]
         }
 
+        print(f"\n[{i}] Sending payload:", payload)
+
         try:
-            response = requests.post(API_URL, json=payload, timeout=5)
-            response.raise_for_status()
-            result = response.json()
-        except Exception as e:
-            print(f"[{idx}] Error calling API: {e}")
-            continue
+            resp = requests.post(API_URL, json=payload, timeout=5)
+            print(f"[{i}] Status code:", resp.status_code)
+            try:
+                print(f"[{i}] Response JSON:", resp.json())
+            except ValueError:
+                print(f"[{i}] Non-JSON response:", resp.text)
+        except requests.RequestException as e:
+            print(f"[{i}] Error calling API: {e}")
 
-        print(f"[{idx}] Input: {payload['records'][0]}")
-        print(f"[{idx}] Response: {result}")
         print("-" * 60)
-
-        # Simulate a delay between sensor readings
         time.sleep(1)
 
 
 if __name__ == "__main__":
     main()
+
