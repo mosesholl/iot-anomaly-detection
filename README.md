@@ -235,6 +235,7 @@ This means:
     {
       "records": [
         {
+          "Device_ID": "DHT11_A",
           "Temperature": 0.1,
           "Humidity": -0.2,
           "Battery_Level": 0.5
