@@ -1,103 +1,81 @@
 from flask import Flask, request, jsonify
 import joblib
-import numpy as np
+import pandas as pd
 import os
 
-# Configuration
 MODEL_PATH = os.path.join("model", "iot_anomaly_model.joblib")
-FEATURES = ["Temperature", "Humidity", "Battery_Level"]
+ANOMALY_THRESHOLD = 0.5  # default threshold for class 1 probabilities
 
-# Create Flask app
 app = Flask(__name__)
 
-# Load the trained model (Pipeline with scaler + classifier)
-try:
-    model = joblib.load(MODEL_PATH)
-except Exception as e:
-    raise RuntimeError(f"Could not load model from {MODEL_PATH}: {e}")
+model = None
+
+
+def load_model():
+    global model
+    try:
+        model = joblib.load(MODEL_PATH)
+        print(f"Loaded model from {MODEL_PATH}")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        model = None
+
+
+load_model()
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    """
-    Simple health check endpoint.
-    """
-    return jsonify({"status": "ok", "model_loaded": True})
+    return jsonify(
+        {
+            "status": "ok",
+            "model_loaded": model is not None,
+            "model_path": MODEL_PATH,
+            "threshold": ANOMALY_THRESHOLD,
+        }
+    )
 
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    """
-    Predict anomalies for one or multiple sensor records.
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 500
 
-    Expected JSON:
-
-    {
-      "records": [
-        {
-          "Temperature": 0.1,
-          "Humidity": -0.2,
-          "Battery_Level": 0.5
-        },
-        ...
-      ]
-    }
-
-    Returns:
-
-    {
-      "results": [
-        {
-          "is_anomaly": true,
-          "anomaly_probability": 0.83
-        },
-        ...
-      ]
-    }
-    """
-    data = request.get_json(silent=True)
-
-    if data is None:
-        return jsonify({"error": "Invalid or missing JSON body"}), 400
-
-    if "records" not in data:
-        return jsonify({"error": "JSON must contain 'records' key"}), 400
+    data = request.get_json()
+    if not data or "records" not in data:
+        return jsonify({"error": "Request JSON must contain 'records' list"}), 400
 
     records = data["records"]
     if not isinstance(records, list) or len(records) == 0:
         return jsonify({"error": "'records' must be a non-empty list"}), 400
 
-    # Validate and extract features
-    X = []
-    for idx, r in enumerate(records):
-        if not isinstance(r, dict):
-            return jsonify({"error": f"Record at index {idx} is not an object"}), 400
+    df = pd.DataFrame(records)
 
-        try:
-            X.append([float(r[feat]) for feat in FEATURES])
-        except KeyError as ke:
-            return jsonify({"error": f"Missing feature {ke} in record {idx}"}), 400
-        except ValueError:
-            return jsonify({"error": f"Non-numeric value in record {idx}"}), 400
+    # Model now expects Device_ID + numeric features
+    expected_cols = ["Temperature", "Humidity", "Battery_Level", "Device_ID"]
+    missing = [c for c in expected_cols if c not in df.columns]
+    if missing:
+        return jsonify({"error": f"Missing required feature(s): {missing}"}), 400
 
-    X = np.array(X)
+    # Ensure we only pass the columns the model was trained on
+    X = df[expected_cols].copy()
 
-    # Model predictions
-    preds = model.predict(X)
+    # Make sure Device_ID is string
+    X["Device_ID"] = X["Device_ID"].astype(str)
 
-    # Some classifiers have predict_proba, some don't
-    if hasattr(model, "predict_proba"):
-        probs = model.predict_proba(X)[:, 1]  # probability of class 1 (anomaly)
-    else:
-        # Fallback: no probabilities available
-        probs = np.zeros_like(preds, dtype=float)
+    try:
+        probas = model.predict_proba(X)[:, 1]  # probability of class 1 (anomaly)
+    except Exception as e:
+        return jsonify({"error": f"Error during prediction: {e}"}), 500
+
+    flags = probas >= ANOMALY_THRESHOLD
 
     results = []
-    for p, prob in zip(preds, probs):
+    for p, flag in zip(probas, flags):
         results.append(
             {
-                "is_anomaly": bool(p),
-                "anomaly_probability": float(prob),
+                "is_anomaly": bool(flag),
+                "anomaly_probability": float(p),
             }
         )
 
@@ -105,5 +83,4 @@ def predict():
 
 
 if __name__ == "__main__":
-    # Run development server
     app.run(host="0.0.0.0", port=5000, debug=True)
